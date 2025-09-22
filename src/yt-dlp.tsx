@@ -1,16 +1,36 @@
-import { ActionPanel, Action, Form, showToast, Toast, Clipboard, Icon, popToRoot, closeMainWindow } from "@raycast/api";
+import {
+  ActionPanel,
+  Action,
+  Form,
+  showToast,
+  Toast,
+  Clipboard,
+  Icon,
+  popToRoot,
+  closeMainWindow,
+  showInFinder,
+  open,
+  environment,
+} from "@raycast/api";
 import React, { useState, useEffect } from "react";
 import { exec } from "child_process";
+import { homedir } from "os";
+import { join } from "path";
 
 interface FormValues {
   url: string;
-  format: string;
+  mediaType: string;
+  videoQuality?: string;
+  audioFormat?: string;
   destination: string;
 }
 
 export default function Command() {
   const [clipboardUrl, setClipboardUrl] = useState("");
   const [ytDlpOk, setYtDlpOk] = useState<boolean | null>(null);
+  const [mediaType, setMediaType] = useState("audio");
+  const [downloadLogs, setDownloadLogs] = useState<string[]>([]);
+  const [isDownloading, setIsDownloading] = useState(false);
 
   useEffect(() => {
     // Récupérer le contenu du presse-papier au chargement
@@ -57,6 +77,49 @@ export default function Command() {
     });
   }
 
+  function addLog(message: string) {
+    setDownloadLogs((prev) => [...prev, `[${new Date().toLocaleTimeString()}] ${message}`]);
+  }
+
+  function buildCommand(values: FormValues): string {
+    let cmd = "yt-dlp ";
+
+    // Options selon le type de média
+    if (values.mediaType === "audio") {
+      cmd += `-x --audio-format ${values.audioFormat || "mp3"} `;
+    } else {
+      // Vidéo avec qualité spécifique
+      switch (values.videoQuality) {
+        case "4k":
+          cmd += `-f "bestvideo[height<=2160]+bestaudio/best[height<=2160]" `;
+          break;
+        case "1080p":
+          cmd += `-f "bestvideo[height<=1080]+bestaudio/best[height<=1080]" `;
+          break;
+        case "720p":
+          cmd += `-f "bestvideo[height<=720]+bestaudio/best[height<=720]" `;
+          break;
+        case "480p":
+          cmd += `-f "bestvideo[height<=480]+bestaudio/best[height<=480]" `;
+          break;
+        default:
+          cmd += `-f best `;
+      }
+    }
+
+    // Dossier de destination
+    const destination = values.destination || join(homedir(), "Downloads");
+    cmd += `-o '${destination}/%(title)s.%(ext)s' `;
+
+    // Options additionnelles
+    cmd += `--no-playlist --embed-metadata `;
+
+    // URL à télécharger
+    cmd += `"${values.url}"`;
+
+    return cmd;
+  }
+
   function handleSubmit(values: FormValues) {
     // Vérifications préalables
     if (!ytDlpOk) {
@@ -77,35 +140,11 @@ export default function Command() {
       return;
     }
 
-    // Détermine le chemin correct de yt-dlp
-    const ytdlpPaths = ["yt-dlp", "/usr/local/bin/yt-dlp", "/opt/homebrew/bin/yt-dlp", "/usr/bin/yt-dlp"];
+    setIsDownloading(true);
+    setDownloadLogs([]);
 
-    // Construction de la commande avec PATH élargi
-    const pathEnv = `PATH=$PATH:/usr/local/bin:/opt/homebrew/bin:/usr/bin:~/.local/bin`;
-    let cmd = `${pathEnv} yt-dlp `;
-
-    // Options selon le format choisi
-    switch (values.format) {
-      case "mp3":
-        cmd += "-x --audio-format mp3 ";
-        break;
-      case "mp4":
-        cmd += "-f 'best[ext=mp4]' ";
-        break;
-      case "best":
-        cmd += "-f best ";
-        break;
-    }
-
-    // Dossier de destination
-    if (values.destination) {
-      cmd += `-o '${values.destination}/%(title)s.%(ext)s' `;
-    } else {
-      cmd += `-o '~/Downloads/%(title)s.%(ext)s' `;
-    }
-
-    // URL à télécharger
-    cmd += `"${values.url}"`;
+    const cmd = buildCommand(values);
+    addLog(`Commande: ${cmd}`);
 
     // Toast de démarrage
     showToast({
@@ -115,24 +154,31 @@ export default function Command() {
     });
 
     // Exécution de la commande avec environnement élargi
-    exec(
+    const extendedPath = `${process.env.PATH || ""}:/usr/local/bin:/opt/homebrew/bin:/usr/bin:${process.env.HOME || ""}/.local/bin`;
+
+    const downloadProcess = exec(
+      // Variable renommée pour éviter le conflit
       cmd,
       {
-        env: {
-          ...process.env,
-          PATH: `${process.env.PATH}:/usr/local/bin:/opt/homebrew/bin:/usr/bin:${process.env.HOME}/.local/bin`,
-        },
+        env: Object.assign({}, process.env, {
+          PATH: extendedPath,
+        }),
       },
       (error, stdout, stderr) => {
+        setIsDownloading(false);
+
         if (error) {
-          console.error(`Erreur exec: ${error}`);
-          console.error(`stderr: ${stderr}`);
+          addLog(`Erreur: ${error.message}`);
+          if (stderr) addLog(`stderr: ${stderr}`);
+
           showToast({
             style: Toast.Style.Failure,
             title: "Échec du téléchargement",
             message: "Vérifiez l'URL et votre connexion internet",
           });
         } else {
+          addLog("Téléchargement terminé avec succès !");
+
           showToast({
             style: Toast.Style.Success,
             title: "Téléchargement terminé !",
@@ -143,10 +189,29 @@ export default function Command() {
           setTimeout(() => {
             popToRoot();
             closeMainWindow();
-          }, 1500);
+          }, 2000);
         }
       },
     );
+
+    // Écouter les outputs en temps réel
+    if (downloadProcess.stdout) {
+      downloadProcess.stdout.on("data", (data) => {
+        const output = data.toString().trim();
+        if (output) {
+          addLog(output);
+        }
+      });
+    }
+
+    if (downloadProcess.stderr) {
+      downloadProcess.stderr.on("data", (data) => {
+        const output = data.toString().trim();
+        if (output && !output.includes("WARNING")) {
+          addLog(`Info: ${output}`);
+        }
+      });
+    }
   }
 
   // Fonction pour obtenir l'icône et la couleur selon l'état de yt-dlp
@@ -155,7 +220,7 @@ export default function Command() {
       return {
         text: "Vérification de yt-dlp...",
         icon: Icon.CircleProgress,
-        iconColor: undefined,
+        iconColor: "yellow" as const,
       };
     } else if (ytDlpOk) {
       return {
@@ -182,10 +247,35 @@ export default function Command() {
             onSubmit={handleSubmit}
             title="Télécharger"
             icon={Icon.Download}
-            shortcut={{ modifiers: ["cmd"], key: "enter" }}
+            shortcut={{ modifiers: ["cmd"], key: "d" }} // Raccourci modifié
           />
           <Action
-            title="Réinstaller yt-dlp"
+            title="Ouvrir le dossier de destination"
+            icon={Icon.Folder}
+            onAction={() => {
+              const destination = join(homedir(), "Downloads");
+              showInFinder(destination);
+            }}
+            shortcut={{ modifiers: ["cmd"], key: "o" }}
+          />
+          <Action
+            title="Coller depuis le presse-papier"
+            icon={Icon.Clipboard}
+            onAction={async () => {
+              const text = await Clipboard.readText();
+              if (text && /^https?:\/\//.test(text)) {
+                setClipboardUrl(text);
+                showToast({
+                  style: Toast.Style.Success,
+                  title: "URL collée !",
+                  message: text,
+                });
+              }
+            }}
+            shortcut={{ modifiers: ["cmd"], key: "v" }}
+          />
+          <Action
+            title="Installer/Mettre à jour yt-dlp"
             icon={Icon.Terminal}
             onAction={() => {
               showToast({
@@ -193,6 +283,7 @@ export default function Command() {
                 title: "Installation de yt-dlp",
                 message: "Exécutez: brew install yt-dlp",
               });
+              open("https://github.com/yt-dlp/yt-dlp#installation");
             }}
           />
         </ActionPanel>
@@ -204,22 +295,54 @@ export default function Command() {
         id="url"
         title="URL de la vidéo"
         placeholder="https://www.youtube.com/watch?v=..."
-        defaultValue={clipboardUrl}
+        value={clipboardUrl}
+        onChange={setClipboardUrl}
         info="L'URL sera automatiquement détectée depuis votre presse-papier"
       />
 
-      <Form.Dropdown id="format" title="Format de sortie" defaultValue="mp3">
-        <Form.Dropdown.Item value="mp3" title="MP3 (audio seulement)" icon={Icon.Music} />
-        <Form.Dropdown.Item value="mp4" title="MP4 (vidéo)" icon={Icon.Video} />
-        <Form.Dropdown.Item value="best" title="Meilleure qualité (auto)" icon={Icon.Star} />
+      <Form.Dropdown id="mediaType" title="Type de média" value={mediaType} onChange={setMediaType}>
+        <Form.Dropdown.Item value="audio" title="Audio seulement" icon={Icon.Music} />
+        <Form.Dropdown.Item value="video" title="Vidéo" icon={Icon.Video} />
       </Form.Dropdown>
+
+      {mediaType === "video" && (
+        <Form.Dropdown id="videoQuality" title="Qualité vidéo" defaultValue="1080p">
+          <Form.Dropdown.Item value="4k" title="4K (2160p)" icon={Icon.Star} />
+          <Form.Dropdown.Item value="1080p" title="1080p (Full HD)" icon={Icon.Circle} />
+          <Form.Dropdown.Item value="720p" title="720p (HD)" icon={Icon.CircleProgress} />
+          <Form.Dropdown.Item value="480p" title="480p (SD)" icon={Icon.Dot} />
+          <Form.Dropdown.Item value="best" title="Meilleure disponible" icon={Icon.Crown} />
+        </Form.Dropdown>
+      )}
+
+      {mediaType === "audio" && (
+        <Form.Dropdown id="audioFormat" title="Format audio" defaultValue="mp3">
+          <Form.Dropdown.Item value="mp3" title="MP3 (recommandé)" icon={Icon.Music} />
+          <Form.Dropdown.Item value="m4a" title="M4A (AAC)" icon={Icon.SpeakerArrowDown} />
+          <Form.Dropdown.Item value="flac" title="FLAC (sans perte)" icon={Icon.Crown} />
+          <Form.Dropdown.Item value="wav" title="WAV (non compressé)" icon={Icon.Waveform} />
+        </Form.Dropdown>
+      )}
 
       <Form.TextField
         id="destination"
         title="Dossier de destination"
-        placeholder="~/Downloads (par défaut)"
-        info="Laissez vide pour utiliser le dossier Téléchargements"
+        placeholder={join(homedir(), "Downloads")}
+        info="Laissez vide pour utiliser le dossier Téléchargements par défaut"
       />
+
+      {downloadLogs.length > 0 && (
+        <Form.Description title="Logs du téléchargement" text={downloadLogs.slice(-3).join("\n")} />
+      )}
+
+      {isDownloading && (
+        <Form.Description
+          title="État"
+          text="⏳ Téléchargement en cours..."
+          icon={Icon.CircleProgress}
+          iconColor="blue"
+        />
+      )}
     </Form>
   );
 }
