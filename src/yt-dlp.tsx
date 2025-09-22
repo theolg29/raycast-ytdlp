@@ -10,7 +10,6 @@ import {
   closeMainWindow,
   showInFinder,
   open,
-  environment,
 } from "@raycast/api";
 import React, { useState, useEffect } from "react";
 import { exec } from "child_process";
@@ -20,8 +19,9 @@ import { join } from "path";
 interface FormValues {
   url: string;
   mediaType: string;
-  videoQuality?: string;
-  audioFormat?: string;
+  videoQuality: string;
+  videoFormat: string;
+  audioFormat: string;
   destination: string;
 }
 
@@ -33,25 +33,22 @@ export default function Command() {
   const [isDownloading, setIsDownloading] = useState(false);
 
   useEffect(() => {
-    // Récupérer le contenu du presse-papier au chargement
     Clipboard.readText().then((text) => {
       if (text && /^https?:\/\//.test(text)) {
         setClipboardUrl(text);
       }
     });
 
-    // Vérifier si yt-dlp est installé
     checkYtDlp();
   }, []);
 
   function checkYtDlp() {
-    // Chemins possibles où yt-dlp peut être installé
     const possiblePaths = [
-      "yt-dlp", // PATH par défaut
-      "/usr/local/bin/yt-dlp", // Homebrew Intel
-      "/opt/homebrew/bin/yt-dlp", // Homebrew Apple Silicon
-      "/usr/bin/yt-dlp", // Installation système
-      "~/.local/bin/yt-dlp", // Installation pip user
+      "yt-dlp",
+      "/usr/local/bin/yt-dlp",
+      "/opt/homebrew/bin/yt-dlp",
+      "/usr/bin/yt-dlp",
+      "~/.local/bin/yt-dlp",
     ];
 
     let found = false;
@@ -68,7 +65,6 @@ export default function Command() {
             setYtDlpOk(true);
           }
 
-          // Si tous les chemins ont été vérifiés et aucun trouvé
           if (checkedCount === possiblePaths.length && !found) {
             setYtDlpOk(false);
           }
@@ -84,44 +80,38 @@ export default function Command() {
   function buildCommand(values: FormValues): string {
     let cmd = "yt-dlp ";
 
-    // Options selon le type de média
     if (values.mediaType === "audio") {
-      cmd += `-x --audio-format ${values.audioFormat || "mp3"} `;
+      if (values.audioFormat === "best") {
+        cmd += "-x --audio-quality 0 ";
+      } else {
+        cmd += `-x --audio-format ${values.audioFormat} `;
+      }
     } else {
-      // Vidéo avec qualité spécifique
-      switch (values.videoQuality) {
-        case "4k":
-          cmd += `-f "bestvideo[height<=2160]+bestaudio/best[height<=2160]" `;
-          break;
-        case "1080p":
-          cmd += `-f "bestvideo[height<=1080]+bestaudio/best[height<=1080]" `;
-          break;
-        case "720p":
-          cmd += `-f "bestvideo[height<=720]+bestaudio/best[height<=720]" `;
-          break;
-        case "480p":
-          cmd += `-f "bestvideo[height<=480]+bestaudio/best[height<=480]" `;
-          break;
-        default:
-          cmd += `-f best `;
+      // mediaType === "video"
+      const videoQualityFilter =
+        values.videoQuality === "best" ? "" : `[height<=${values.videoQuality.replace("p", "")}]`;
+      const videoFormatFilter = values.videoFormat === "best" ? "" : `[ext=${values.videoFormat}]`;
+
+      // On demande la meilleure vidéo possible et le meilleur audio possible
+      cmd += `-f "bestvideo${videoQualityFilter}+bestaudio/best" `;
+
+      // Si un format spécifique est choisi, on force le re-encodage
+      if (values.videoFormat !== "best") {
+        cmd += `--recode-video ${values.videoFormat} `;
       }
     }
 
-    // Dossier de destination
     const destination = values.destination || join(homedir(), "Downloads");
     cmd += `-o '${destination}/%(title)s.%(ext)s' `;
 
-    // Options additionnelles
     cmd += `--no-playlist --embed-metadata `;
 
-    // URL à télécharger
     cmd += `"${values.url}"`;
 
     return cmd;
   }
 
   function handleSubmit(values: FormValues) {
-    // Vérifications préalables
     if (!ytDlpOk) {
       showToast({
         style: Toast.Style.Failure,
@@ -146,18 +136,15 @@ export default function Command() {
     const cmd = buildCommand(values);
     addLog(`Commande: ${cmd}`);
 
-    // Toast de démarrage
     showToast({
       style: Toast.Style.Animated,
       title: "Téléchargement en cours...",
       message: "Traitement de la vidéo avec yt-dlp",
     });
 
-    // Exécution de la commande avec environnement élargi
     const extendedPath = `${process.env.PATH || ""}:/usr/local/bin:/opt/homebrew/bin:/usr/bin:${process.env.HOME || ""}/.local/bin`;
 
     const downloadProcess = exec(
-      // Variable renommée pour éviter le conflit
       cmd,
       {
         env: Object.assign({}, process.env, {
@@ -185,7 +172,6 @@ export default function Command() {
             message: "Le fichier a été sauvegardé avec succès",
           });
 
-          // Fermer l'interface après succès
           setTimeout(() => {
             popToRoot();
             closeMainWindow();
@@ -194,7 +180,6 @@ export default function Command() {
       },
     );
 
-    // Écouter les outputs en temps réel
     if (downloadProcess.stdout) {
       downloadProcess.stdout.on("data", (data) => {
         const output = data.toString().trim();
@@ -214,7 +199,6 @@ export default function Command() {
     }
   }
 
-  // Fonction pour obtenir l'icône et la couleur selon l'état de yt-dlp
   function getYtDlpStatus() {
     if (ytDlpOk === null) {
       return {
@@ -247,7 +231,7 @@ export default function Command() {
             onSubmit={handleSubmit}
             title="Télécharger"
             icon={Icon.Download}
-            shortcut={{ modifiers: ["cmd"], key: "d" }} // Raccourci modifié
+            shortcut={{ modifiers: ["cmd"], key: "d" }}
           />
           <Action
             title="Ouvrir le dossier de destination"
@@ -306,18 +290,27 @@ export default function Command() {
       </Form.Dropdown>
 
       {mediaType === "video" && (
-        <Form.Dropdown id="videoQuality" title="Qualité vidéo" defaultValue="1080p">
-          <Form.Dropdown.Item value="4k" title="4K (2160p)" icon={Icon.Star} />
-          <Form.Dropdown.Item value="1080p" title="1080p (Full HD)" icon={Icon.Circle} />
-          <Form.Dropdown.Item value="720p" title="720p (HD)" icon={Icon.CircleProgress} />
-          <Form.Dropdown.Item value="480p" title="480p (SD)" icon={Icon.Dot} />
-          <Form.Dropdown.Item value="best" title="Meilleure disponible" icon={Icon.Crown} />
-        </Form.Dropdown>
+        <>
+          <Form.Dropdown id="videoQuality" title="Qualité vidéo" defaultValue="best">
+            <Form.Dropdown.Item value="best" title="Meilleure qualité" icon={Icon.Star} />
+            <Form.Dropdown.Item value="2160p" title="4K (2160p)" icon={Icon.Star} />
+            <Form.Dropdown.Item value="1440p" title="2K (1440p)" icon={Icon.Circle} />
+            <Form.Dropdown.Item value="1080p" title="1080p (Full HD)" icon={Icon.Circle} />
+            <Form.Dropdown.Item value="720p" title="720p (HD)" icon={Icon.CircleProgress} />
+            <Form.Dropdown.Item value="480p" title="480p (SD)" icon={Icon.Dot} />
+          </Form.Dropdown>
+          <Form.Dropdown id="videoFormat" title="Format vidéo" defaultValue="best">
+            <Form.Dropdown.Item value="best" title="Meilleur format" icon={Icon.Star} />
+            <Form.Dropdown.Item value="mp4" title="MP4" icon={Icon.Video} />
+            <Form.Dropdown.Item value="webm" title="WebM" icon={Icon.Globe} />
+          </Form.Dropdown>
+        </>
       )}
 
       {mediaType === "audio" && (
-        <Form.Dropdown id="audioFormat" title="Format audio" defaultValue="mp3">
-          <Form.Dropdown.Item value="mp3" title="MP3 (recommandé)" icon={Icon.Music} />
+        <Form.Dropdown id="audioFormat" title="Format audio" defaultValue="best">
+          <Form.Dropdown.Item value="best" title="Meilleure qualité" icon={Icon.Star} />
+          <Form.Dropdown.Item value="mp3" title="MP3" icon={Icon.Music} />
           <Form.Dropdown.Item value="m4a" title="M4A (AAC)" icon={Icon.SpeakerArrowDown} />
           <Form.Dropdown.Item value="flac" title="FLAC (sans perte)" icon={Icon.Crown} />
           <Form.Dropdown.Item value="wav" title="WAV (non compressé)" icon={Icon.Waveform} />
